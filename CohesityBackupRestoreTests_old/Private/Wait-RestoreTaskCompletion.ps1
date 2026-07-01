@@ -44,8 +44,9 @@ function Wait-RestoreTaskCompletion {
 
     Write-Information "Restore task started with ID: '$TaskId' (timeout: $MaxWaitMinutes minutes)"
 
-    # Monitor the restore task until completion
-    $status = Get-CohesityRestoreTask -Ids $TaskId
+    # Get-CohesityRestoreTask is a compiled DLL cmdlet that ignores HttpClientHandler cert bypass
+    # on PS7/.NET 6+. Use Invoke-RestApi directly (uses -SkipCertificateCheck on PS6+).
+    $status = (Invoke-CohesityRestApi -Method Get -Uri "/irisservices/api/v1/public/restore/tasks/$TaskId")
     $startTime = Get-Date
 
     while ($status.status -notin @('kFinished', 'kError', 'kCanceled')) {
@@ -62,7 +63,7 @@ function Wait-RestoreTaskCompletion {
 
         Write-Information "Restoring '$DatabaseName' - Status: $($status.status) (Elapsed: $([math]::Round($elapsed, 1)) min)"
         Start-Sleep -Seconds $CheckIntervalSeconds
-        $status = Get-CohesityRestoreTask -Ids $TaskId
+        $status = (Invoke-CohesityRestApi -Method Get -Uri "/irisservices/api/v1/public/restore/tasks/$TaskId")
     }
 
     Write-Information "Restore task completed for '$DatabaseName' with status: $($status.status)"

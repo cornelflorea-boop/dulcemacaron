@@ -1,11 +1,12 @@
 function Get-RestoreTargetObjectIds {
     <#
     .SYNOPSIS
-        Retrieves Cohesity target object IDs for the specified server
+        Retrieves Cohesity target object info for the specified server
 
     .DESCRIPTION
-        Looks up the target server in Cohesity and returns its parent object ID.
-        Uses the shared Get-RestoreServerParentId helper function.
+        Looks up the target server in Cohesity and returns the full object needed to build
+        the targetHost block in a /recoverApplication payload. Returns the parent ID plus
+        the physicalProtectionSource details (name, hostType, osName) required by the API.
 
     .PARAMETER TargetServer
         The target SQL Server hostname
@@ -14,14 +15,14 @@ function Get-RestoreTargetObjectIds {
         Optional hashtable for caching server IDs to improve performance with multiple databases
 
     .OUTPUTS
-        String representing the target server's parent object ID
+        PSCustomObject with ParentId (int) and ProtectionSource (object) properties
 
     .EXAMPLE
-        $targetId = Get-RestoreTargetObjectIds -TargetServer "server02"
+        $target = Get-RestoreTargetObjectIds -TargetServer "server02"
 
     .EXAMPLE
         $cache = @{}
-        $targetId = Get-RestoreTargetObjectIds -TargetServer "server02" -ServerIdCache $cache
+        $target = Get-RestoreTargetObjectIds -TargetServer "server02" -ServerIdCache $cache
     #>
     [CmdletBinding()]
     param(
@@ -36,8 +37,38 @@ function Get-RestoreTargetObjectIds {
 
     Write-Information "Retrieving target object IDs for '$TargetServer'"
 
-    # Use helper function to get parent ID with optional cache
-    $targetParentId = Get-RestoreServerParentId -ServerName $TargetServer -Cache $ServerIdCache
+    $cacheKey = "fullobj_$TargetServer"
+    if ($ServerIdCache -and $ServerIdCache.ContainsKey($cacheKey)) {
+        Write-Information "Using cached target object for server '$TargetServer'"
+        return $ServerIdCache[$cacheKey]
+    }
 
-    return $targetParentId
+    $objects = Get-CohesityObject -SearchString $TargetServer |
+        Select-Object -Property * -ExcludeProperty uuid, logicalSizeInBytes, parentSource
+
+    $targetObject = $null
+    foreach ($object in $objects) {
+        if ($object.source.environment -eq 'kPhysical') {
+            $parentId = $object.protectionSourceUidList | Select-Object -ExpandProperty sourceId -First 1
+            Write-Information "Found parent ID '$parentId' for server '$TargetServer'"
+
+            $protSource = Get-CohesityProtectionSource -Id $parentId
+            $targetObject = [PSCustomObject]@{
+                ParentId         = $parentId
+                ProtectionSource = $protSource
+            }
+            break
+        }
+    }
+
+    if (-not $targetObject) {
+        throw "Could not find target object for server '$TargetServer'"
+    }
+
+    if ($ServerIdCache) {
+        $ServerIdCache[$cacheKey] = $targetObject
+        $ServerIdCache[$TargetServer] = $targetObject.ParentId
+    }
+
+    return $targetObject
 }
