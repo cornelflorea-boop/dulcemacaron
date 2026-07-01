@@ -118,7 +118,6 @@ function CohesityBackupRestoreTests {
     $Script:ErrorActionPreference = 'Stop'
     $Script:InformationPreference = 'Continue'
     $Script:ProgressPreference = 'SilentlyContinue'
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     # Error tracking
     $foundError = $false
@@ -148,7 +147,7 @@ function CohesityBackupRestoreTests {
             Write-Information "Rakuten.IT.Box module loaded successfully"
 
             Write-Information "Retrieving Box credentials from Secret Server (ID: $BoxSecretID)"
-            $boxSecret = Get-SSSecret -SecretId $BoxSecretID -As PlainText -ErrorAction Stop
+            $boxSecret = Get-SSSecret -Id $BoxSecretID -As PlainText -ErrorAction Stop
 
             if ([string]::IsNullOrEmpty($boxSecret.Password)) {
                 throw "Box credentials not found or empty in Secret Server ID: $BoxSecretID"
@@ -424,7 +423,7 @@ function CohesityBackupRestoreTests {
             }
             catch {
                 Write-Warning "Box connection lost, attempting to reconnect..."
-                $boxSecret = Get-SSSecret -SecretId $BoxSecretID -As PlainText -ErrorAction Stop
+                $boxSecret = Get-SSSecret -Id $BoxSecretID -As PlainText -ErrorAction Stop
                 Connect-Box -Json $boxSecret.Password -ErrorAction Stop
                 Write-Information "Successfully reconnected to Box"
             }
@@ -516,7 +515,8 @@ function CohesityBackupRestoreTests {
             -Priority 'Critical' `
             -JobName 'CohesityBackupRestoreTests' `
             -Summary "[CohesityBackupRestoreTests] Backup Restore Tests failed" `
-            -Description @"
+            -Description (
+@"
 Cohesity Backup Restore Tests failed with errors.
 
 Test Results Summary:
@@ -537,7 +537,7 @@ $_
 Please investigate Secret Server credentials and system connectivity:
 - Cohesity Secret: $CohesitySecretID
 - Box Secret: $BoxSecretID
-"@ `
+"@) `
             -Components @('IssueHandler: IOC', 'IssueOwner: Core', 'IssueType: Incident') `
             -CheckIfExists `
             -AdditionalData $testResults `
@@ -566,7 +566,7 @@ Please investigate Secret Server credentials and system connectivity:
 
         # Always disconnect from Cohesity
         Write-Information "Disconnecting from Cohesity cluster"
-        Disconnect-CohesityCluster -ErrorAction SilentlyContinue
+        try { Disconnect-CohesityCluster -ErrorAction SilentlyContinue } catch { }
         Write-Information "End - Cohesity Backup Restore Tests"
     }
 }

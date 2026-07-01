@@ -94,26 +94,87 @@ function Invoke-RestoreSingleDatabase {
         # Get source object IDs with optional cache
         $sourceIds = Get-RestoreSourceObjectIds -SourceServer $SourceServer -SourceDatabase $SourceDatabase -ServerIdCache $ServerIdCache
 
-        # Get target object IDs with optional cache
-        $targetParentId = Get-RestoreTargetObjectIds -TargetServer $TargetServer -ServerIdCache $ServerIdCache
+        # Get target object (full protection source info needed for targetHost payload)
+        $targetInfo = Get-RestoreTargetObjectIds -TargetServer $TargetServer -ServerIdCache $ServerIdCache
+
+        # Build targetHostObject matching Restore-CohesityRemoteMSSQLObject payload structure.
+        # Physical hosts need type=6 and a physicalEntity block; VMware hosts need type=1 and vmwareEntity.
+        $targetHostObject = @{ id = $targetInfo.ParentId }
+        $targetHostParentSource = $null
+        $protSrc = $targetInfo.ProtectionSource
+        if ($protSrc -and $protSrc.environment -eq 'kVMware') {
+            $targetHostObject['type'] = 1
+            $targetHostObject['parentId'] = $protSrc.parentId
+            $targetHostObject['vmwareEntity'] = @{ type = 8; name = $protSrc.vmWareProtectionSource.name }
+            $targetHostParentSource = @{ id = $protSrc.parentId }
+        } else {
+            $targetHostObject['type'] = 6
+            if ($protSrc -and $protSrc.physicalProtectionSource) {
+                $targetHostObject['physicalEntity'] = @{
+                    type     = 1
+                    name     = $protSrc.physicalProtectionSource.name
+                    hostType = 1
+                    osName   = $protSrc.physicalProtectionSource.osName
+                }
+            }
+        }
 
         # Start the restore operation
+        # Restore-CohesityMSSQLObject is a compiled DLL cmdlet that ignores HttpClientHandler
+        # cert bypass on PS7/.NET 6+. Build the REST payload directly and use Invoke-CohesityRestApi,
+        # same structure as Restore-CohesityRemoteMSSQLObject.
         Write-Information "Starting restore task for '$SourceDatabase' to '$TargetServer'"
-        $restoreTask = Restore-CohesityMSSQLObject `
-            -TaskName "SQL Restore test - $SourceDatabase" `
-            -SourceId $sourceIds.SourceId `
-            -HostSourceId $sourceIds.ParentId `
-            -JobId $latestJobRun.jobId `
-            -NewDatabaseName $targetDatabase `
-            -NewInstanceName $DefaultInstance `
-            -TargetHostId $targetParentId `
-            -TargetDataFilesDirectory $targetPaths.DataPath `
-            -TargetLogFilesDirectory $targetPaths.LogPath `
-            -Confirm:$false
-
-        if ($null -eq $restoreTask) {
-            throw "Failed to start restore task for '$SourceDatabase'"
+        $jobRunId     = $latestJobRun.backupRun.jobRunId
+        $startTimeUs  = $latestJobRun.copyRun[0].runStartTimeUsecs
+        # jobUid: prefer from searchvms result (sourceIds.JobUid), fall back to protectionRun
+        $jobUid = if ($sourceIds.JobUid) { $sourceIds.JobUid } else { $latestJobRun.jobUid }
+        $payload = @{
+            action           = 'kRecoverApp'
+            name             = "SQL Restore test - $SourceDatabase"
+            restoreAppParams = @{
+                type             = 3  # kSQL
+                ownerRestoreInfo = @{
+                    ownerObject        = @{
+                        jobUid         = $jobUid
+                        jobId          = $latestJobRun.jobId
+                        jobInstanceId  = $jobRunId
+                        startTimeUsecs = $startTimeUs
+                        entity         = @{ id = $sourceIds.ParentId }
+                    }
+                    ownerRestoreParams = @{
+                        action           = 'kRecoverVMs'
+                        powerStateConfig = @{}
+                    }
+                    performRestore     = $false
+                }
+                restoreAppObjectVec = @(@{
+                    appEntity     = $sourceIds.AppEntity
+                    restoreParams = @{
+                        sqlRestoreParams = @{
+                            captureTailLogs     = $false
+                            dataFileDestination = $targetPaths.DataPath
+                            logFileDestination  = $targetPaths.LogPath
+                            newDatabaseName     = $targetDatabase
+                            instanceName        = $DefaultInstance
+                            isMultiStageRestore = $false
+                        }
+                        targetHost             = $targetHostObject
+                        targetHostParentSource = $targetHostParentSource
+                    }
+                })
+            }
         }
+        $resp = Invoke-CohesityRestApi -Method Post -Uri '/irisservices/api/v1/recoverApplication' -Body ($payload | ConvertTo-Json -Depth 20)
+
+        if ($Global:CohesityAPIStatus.StatusCode -ne 200) {
+            throw "Failed to start restore task for '$SourceDatabase': $($Global:CohesityAPIStatus.ErrorMessage)"
+        }
+
+        $taskId = $resp.restoreTask.performRestoreTaskState.base.taskId
+        if ($null -eq $taskId) {
+            throw "Failed to start restore task for '$SourceDatabase': no taskId in response"
+        }
+        $restoreTask = @{ id = $taskId }
 
         # Monitor restore task until completion
         $result = Wait-RestoreTaskCompletion `

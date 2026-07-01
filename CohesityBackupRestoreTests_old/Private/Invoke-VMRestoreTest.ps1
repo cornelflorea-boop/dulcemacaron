@@ -43,9 +43,13 @@ function Invoke-VMRestoreTest {
 
     try {
         Write-Information "Searching Cohesity for VM: '$VMName'"
-        $vmObjects = Find-CohesityObjectsForRestore -Search $VMName
+        # Find-CohesityObjectsForRestore is a compiled DLL cmdlet that ignores HttpClientHandler
+        # cert bypass on PS7/.NET 6+. Use Invoke-RestApi directly (uses -SkipCertificateCheck on PS6+).
+        $searchResult = Invoke-CohesityRestApi -Method Get -Uri "/irisservices/api/v1/searchvms?entityTypes=kVMware&onlyLatestVersion=true&searchString=$VMName"
 
-        $vm = $vmObjects | Where-Object { $_.ObjectName -eq $VMName } | Select-Object -First 1
+        $vm = $searchResult.vms |
+            Where-Object { $_.vmDocument.objectId.entity.displayName -eq $VMName -or $_.vmDocument.objectAliases -contains $VMName } |
+            Select-Object -First 1
 
         if (-not $vm) {
             return [PSCustomObject]@{
@@ -55,11 +59,11 @@ function Invoke-VMRestoreTest {
             }
         }
 
-        $sourceId         = $vm.SnapshottedSource.id
-        $jobId            = $vm.JobId
-        $latestVersion    = $vm.Versions | Select-Object -First 1
-        $jobRunId         = $latestVersion.JobRunId
-        $startedTimeUsecs = $latestVersion.StartedTimeUsecs
+        $sourceId         = $vm.vmDocument.objectId.entity.id
+        $jobId            = $vm.vmDocument.objectId.jobId
+        $latestVersion    = $vm.vmDocument.versions | Select-Object -First 1
+        $jobRunId         = $latestVersion.instanceId.jobInstanceId
+        $startedTimeUsecs = $latestVersion.instanceId.jobStartTimeUsecs
 
         Write-Information "Found VM '$VMName' (SourceId: $sourceId, JobId: $jobId). Starting restore..."
 

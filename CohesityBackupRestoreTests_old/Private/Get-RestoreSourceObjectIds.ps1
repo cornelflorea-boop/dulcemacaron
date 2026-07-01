@@ -18,7 +18,7 @@ function Get-RestoreSourceObjectIds {
         Optional hashtable for caching server IDs to improve performance with multiple databases
 
     .OUTPUTS
-        PSCustomObject with SourceId (database object ID) and ParentId (server object ID) properties
+        PSCustomObject with SourceId, ParentId, AppEntity (full entity from searchvms), and JobUid properties
 
     .EXAMPLE
         $ids = Get-RestoreSourceObjectIds -SourceServer "server01" -SourceDatabase "MyDB"
@@ -46,20 +46,27 @@ function Get-RestoreSourceObjectIds {
     # Get Source's Parent ID using helper function with optional cache
     $parentId = Get-RestoreServerParentId -ServerName $SourceServer -Cache $ServerIdCache
 
-    # Get Source database object ID - use -Search parameter for efficiency
-    $Source = Find-CohesityObjectsForRestore -Search $SourceDatabase -Environments kSQL |
-        Where-Object { $_.ObjectName -like "*/$SourceDatabase" } |
-        Select-Object -ExpandProperty SnapshottedSource |
-        Where-Object { $_.ParentId -eq $parentId } |
-        Select-Object -First 1 -Property Id
+    # Find-CohesityObjectsForRestore is a compiled DLL cmdlet that ignores HttpClientHandler
+    # cert bypass on PS7/.NET 6+. Use Invoke-RestApi directly (uses -SkipCertificateCheck on PS6+).
+    $searchResult = Invoke-CohesityRestApi -Method Get -Uri "/irisservices/api/v1/searchvms?environment=SQL&entityTypes=kSQL&onlyLatestVersion=true&searchString=$SourceDatabase"
 
-    if ($null -eq $Source) {
+    $source = $searchResult.vms |
+        Where-Object { $_.vmDocument.objectId.entity.sqlEntity.databaseName -eq $SourceDatabase } |
+        Where-Object { $_.vmDocument.objectId.entity.sqlEntity.ownerId -eq $parentId } |
+        Select-Object -First 1
+
+    if ($null -eq $source) {
         throw "Could not find source database object for '$SourceDatabase' on server '$SourceServer'"
     }
 
-    Write-Information "Found database source ID: $($Source.Id)"
+    $sourceId  = $source.vmDocument.objectId.entity.id
+    $appEntity = $source.vmDocument.objectId.entity
+    $jobUid    = $source.vmDocument.objectId.jobUid
+    Write-Information "Found database source ID: $sourceId"
     return [PSCustomObject]@{
-        SourceId = $Source.Id
-        ParentId = $parentId
+        SourceId   = $sourceId
+        ParentId   = $parentId
+        AppEntity  = $appEntity
+        JobUid     = $jobUid
     }
 }
