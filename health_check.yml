@@ -1,0 +1,25 @@
+---
+- name: Windows server health check
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Test connectivity
+      ansible.windows.win_ping:
+
+    - name: Get OS info
+      ansible.windows.win_shell: |
+        (Get-CimInstance Win32_OperatingSystem).Caption
+      register: os_info
+
+    - name: Show OS
+      ansible.builtin.debug:
+        msg: "{{ os_info.stdout | trim }}"
+
+    - name: Check a service (example: Windows Update)
+      ansible.windows.win_service_info:
+        name: wuauserv
+      register: svc
+
+    - name: Show service state
+      ansible.builtin.debug:
+        msg: "wuauserv is {{ svc.services[0].state }}"
