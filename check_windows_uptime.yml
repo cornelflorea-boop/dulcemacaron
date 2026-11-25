@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: true
   vars:
-    reboot_warning_days: 30   # flag hosts that haven't rebooted in this many days
+    reboot_warning_days: 30
 
   tasks:
     - name: Calculate uptime in days
@@ -17,7 +17,7 @@
 
     - name: Set last boot fact
       ansible.builtin.set_fact:
-        last_boot: "{{ boot_time.stdout | trim }}"
+        last_boot: "{{ (boot_time.stdout | default(boot_time.stdout_lines | default(boot_time.output | default([''])) | join('\n'))) | trim }}"
 
     - name: Report uptime and status for each host
       ansible.builtin.debug:
