@@ -6,18 +6,21 @@
     reboot_warning_days: 30   # flag hosts that haven't rebooted in this many days
 
   tasks:
-    - name: Calculate uptime in days and last boot time
+    - name: Calculate uptime in days
       ansible.builtin.set_fact:
         uptime_days: "{{ ((ansible_uptime_seconds | int) / 86400) | round(2) }}"
-        last_boot: "{{ ansible_lastboot_wmi | default('unknown') }}"
 
-    - name: Report uptime for each host
+    - name: Get last boot time
+      ansible.windows.win_shell: (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("yyyy-MM-dd HH:mm")
+      register: boot_time
+      changed_when: false
+
+    - name: Set last boot fact
+      ansible.builtin.set_fact:
+        last_boot: "{{ boot_time.stdout | trim }}"
+
+    - name: Report uptime and status for each host
       ansible.builtin.debug:
         msg: >-
-          {{ inventory_hostname }}: up {{ uptime_days }} days
-          (last boot: {{ last_boot }})
-
-    - name: Warn on hosts exceeding the reboot threshold
-      ansible.builtin.debug:
-        msg: "WARNING: {{ inventory_hostname }} has not rebooted in {{ uptime_days }} days"
-      when: uptime_days | float > reboot_warning_days | float
+          {{ inventory_hostname }}: {{ 'WARNING' if (uptime_days | float > reboot_warning_days | float) else 'OK' }}
+          - up {{ uptime_days }} days (last boot: {{ last_boot }})
