@@ -1,0 +1,23 @@
+---
+- name: Check Windows server uptime
+  hosts: all
+  gather_facts: true
+  vars:
+    reboot_warning_days: 30   # flag hosts that haven't rebooted in this many days
+
+  tasks:
+    - name: Calculate uptime in days and last boot time
+      ansible.builtin.set_fact:
+        uptime_days: "{{ ((ansible_uptime_seconds | int) / 86400) | round(2) }}"
+        last_boot: "{{ ansible_lastboot_wmi | default('unknown') }}"
+
+    - name: Report uptime for each host
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: up {{ uptime_days }} days
+          (last boot: {{ last_boot }})
+
+    - name: Warn on hosts exceeding the reboot threshold
+      ansible.builtin.debug:
+        msg: "WARNING: {{ inventory_hostname }} has not rebooted in {{ uptime_days }} days"
+      when: uptime_days | float > reboot_warning_days | float
